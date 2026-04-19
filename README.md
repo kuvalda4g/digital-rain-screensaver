@@ -62,6 +62,12 @@ Fullscreen mode:
 ./build/digital-rain-screensaver --fullscreen
 ```
 
+Enable horizontal sway:
+
+```bash
+./build/digital-rain-screensaver --sway
+```
+
 Custom window size:
 
 ```bash
