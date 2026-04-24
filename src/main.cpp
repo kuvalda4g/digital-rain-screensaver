@@ -64,15 +64,32 @@ struct Column {
   float swayDrift = 0.0f;
   float headPulse = 0.0f;
   float tint = 0.0f;
+  float xOffset = 0.0f;
   std::vector<std::uint8_t> glyphs;
   std::vector<float> mutationTimers;
+};
+
+struct RainLayer {
+  Layout layout;
+  float glyphScale = 1.0f;
+  float speedMultiplier = 1.0f;
+  float trailMultiplier = 1.0f;
+  float alphaMultiplier = 1.0f;
+  float glowMultiplier = 1.0f;
+  float veilMultiplier = 1.0f;
+  float pulseMultiplier = 1.0f;
+  float mutationMultiplier = 1.0f;
+  float swayMultiplier = 1.0f;
+  float horizontalJitter = 0.0f;
+  float accentBias = 0.0f;
+  std::vector<Column> columns;
 };
 
 struct AppState {
   Config config;
   Layout layout;
   std::vector<Glyph> glyphAtlas;
-  std::vector<Column> columns;
+  std::array<RainLayer, 3> rainLayers;
   std::mt19937 rng;
   double timeSeconds = 0.0;
 };
@@ -312,6 +329,75 @@ Color mixColor(const Color &from, const Color &to, float t) {
   };
 }
 
+std::array<RainLayer, 3> createRainLayers() {
+  return {{
+      {
+          .layout = {},
+          .glyphScale = 0.72f,
+          .speedMultiplier = 0.56f,
+          .trailMultiplier = 0.72f,
+          .alphaMultiplier = 0.30f,
+          .glowMultiplier = 0.28f,
+          .veilMultiplier = 0.22f,
+          .pulseMultiplier = 0.55f,
+          .mutationMultiplier = 0.76f,
+          .swayMultiplier = 0.60f,
+          .horizontalJitter = 0.16f,
+          .accentBias = 0.14f,
+          .columns = {},
+      },
+      {
+          .layout = {},
+          .glyphScale = 1.0f,
+          .speedMultiplier = 1.0f,
+          .trailMultiplier = 1.0f,
+          .alphaMultiplier = 0.72f,
+          .glowMultiplier = 0.72f,
+          .veilMultiplier = 0.60f,
+          .pulseMultiplier = 0.95f,
+          .mutationMultiplier = 1.0f,
+          .swayMultiplier = 1.0f,
+          .horizontalJitter = 0.08f,
+          .accentBias = 0.0f,
+          .columns = {},
+      },
+      {
+          .layout = {},
+          .glyphScale = 1.28f,
+          .speedMultiplier = 1.40f,
+          .trailMultiplier = 1.20f,
+          .alphaMultiplier = 0.96f,
+          .glowMultiplier = 1.12f,
+          .veilMultiplier = 1.0f,
+          .pulseMultiplier = 1.28f,
+          .mutationMultiplier = 1.18f,
+          .swayMultiplier = 1.18f,
+          .horizontalJitter = 0.12f,
+          .accentBias = -0.10f,
+          .columns = {},
+      },
+  }};
+}
+
+Layout buildLayerLayout(const Layout &baseLayout, float glyphScale) {
+  Layout layout;
+  layout.width = baseLayout.width;
+  layout.height = baseLayout.height;
+
+  if (baseLayout.width <= 0 || baseLayout.height <= 0) {
+    return layout;
+  }
+
+  layout.pixelSize = std::max(1.15f, baseLayout.pixelSize * glyphScale);
+  layout.cellWidth = std::max(8.0f, std::round(layout.pixelSize * 6.0f));
+  layout.cellHeight = std::max(12.0f, std::round(layout.pixelSize * 9.0f));
+  layout.cols = std::max(1, static_cast<int>(std::ceil(static_cast<float>(layout.width) / layout.cellWidth)));
+  layout.rows = std::max(1, static_cast<int>(std::ceil(static_cast<float>(layout.height) / layout.cellHeight)));
+  layout.glyphOffsetX = std::round((layout.cellWidth - (layout.pixelSize * kGlyphWidth)) * 0.5f);
+  layout.glyphOffsetY = std::round((layout.cellHeight - (layout.pixelSize * kGlyphHeight)) * 0.5f);
+  return layout;
+}
+
 void updateLayout(AppState &app, int width, int height) {
   Layout layout;
   layout.width = width;
@@ -334,19 +420,27 @@ void updateLayout(AppState &app, int width, int height) {
   app.layout = layout;
 }
 
-void resetColumn(AppState &app, Column &column, bool staggeredStart) {
-  const int rowCount = app.layout.rows;
+void resetColumn(AppState &app, RainLayer &layer, Column &column, bool staggeredStart) {
+  const int rowCount = layer.layout.rows;
+  const int baseMinTrail = std::max(8, rowCount / 7);
+  const int baseMaxTrail = std::max(baseMinTrail + 2, rowCount / 2);
+  const int minTrail = std::max(6, static_cast<int>(std::round(static_cast<float>(baseMinTrail) * layer.trailMultiplier)));
+  const int maxTrail =
+      std::max(minTrail + 2, static_cast<int>(std::round(static_cast<float>(baseMaxTrail) * layer.trailMultiplier)));
 
-  column.speed = randomFloat(app.rng, 10.0f, 28.0f);
-  column.trailLength = randomInt(app.rng, std::max(10, rowCount / 6), std::max(12, rowCount / 2));
-  column.respawnGap = randomFloat(app.rng, 2.0f, 14.0f);
+  column.speed = randomFloat(app.rng, 10.0f, 28.0f) * layer.speedMultiplier;
+  column.trailLength = randomInt(app.rng, minTrail, maxTrail);
+  column.respawnGap = randomFloat(app.rng, 2.0f, 14.0f) * std::lerp(0.85f, 1.15f, layer.glyphScale - 0.5f);
   column.phase = randomFloat(app.rng, 0.0f, 2.0f * kPi);
-  column.intensity = randomFloat(app.rng, 0.85f, 1.2f);
-  column.swayAmplitude = randomFloat(app.rng, 0.12f, 0.75f);
+  column.intensity = randomFloat(app.rng, 0.85f, 1.2f) * std::lerp(0.92f, 1.08f, saturate(layer.alphaMultiplier));
+  column.swayAmplitude = randomFloat(app.rng, 0.12f, 0.75f) * layer.swayMultiplier;
   column.swayFrequency = randomFloat(app.rng, 0.45f, 1.35f);
   column.swayDrift = randomFloat(app.rng, 0.10f, 0.28f);
-  column.headPulse = randomFloat(app.rng, 0.0f, 0.65f);
+  column.headPulse = randomFloat(app.rng, 0.0f, 0.65f) * layer.pulseMultiplier;
   column.tint = randomFloat(app.rng, 0.0f, 1.0f);
+  column.xOffset = randomFloat(app.rng,
+                               -layer.layout.cellWidth * layer.horizontalJitter,
+                               layer.layout.cellWidth * layer.horizontalJitter);
   column.head = staggeredStart
                     ? randomFloat(app.rng, -static_cast<float>(rowCount), static_cast<float>(rowCount))
                     : randomFloat(app.rng, -static_cast<float>(column.trailLength) * 1.5f, -2.0f);
@@ -361,54 +455,64 @@ void resetColumn(AppState &app, Column &column, bool staggeredStart) {
 }
 
 void rebuildColumns(AppState &app) {
-  if (app.layout.cols <= 0 || app.layout.rows <= 0) {
-    app.columns.clear();
+  if (app.layout.width <= 0 || app.layout.height <= 0) {
+    for (RainLayer &layer : app.rainLayers) {
+      layer.layout = {};
+      layer.columns.clear();
+    }
     return;
   }
 
-  app.columns.assign(static_cast<std::size_t>(app.layout.cols), {});
-  for (Column &column : app.columns) {
-    resetColumn(app, column, true);
+  for (RainLayer &layer : app.rainLayers) {
+    layer.layout = buildLayerLayout(app.layout, layer.glyphScale);
+    layer.columns.assign(static_cast<std::size_t>(layer.layout.cols), {});
+    for (Column &column : layer.columns) {
+      resetColumn(app, layer, column, true);
+    }
   }
 }
 
 void updateColumns(AppState &app, float deltaSeconds) {
-  if (app.columns.empty()) {
-    return;
-  }
+  for (RainLayer &layer : app.rainLayers) {
+    if (layer.columns.empty()) {
+      continue;
+    }
 
-  const int rowCount = app.layout.rows;
+    const int rowCount = layer.layout.rows;
 
-  for (Column &column : app.columns) {
-    column.head += column.speed * deltaSeconds;
-    column.headPulse = std::max(0.0f, column.headPulse - (deltaSeconds * 0.9f));
+    for (Column &column : layer.columns) {
+      column.head += column.speed * deltaSeconds;
+      column.headPulse =
+          std::max(0.0f, column.headPulse - (deltaSeconds * (1.05f / std::max(0.45f, layer.pulseMultiplier))));
 
-    const int minRow = std::max(0, static_cast<int>(std::floor(column.head)) - column.trailLength - 1);
-    const int maxRow = std::min(rowCount - 1, static_cast<int>(std::ceil(column.head)) + 1);
+      const int minRow = std::max(0, static_cast<int>(std::floor(column.head)) - column.trailLength - 1);
+      const int maxRow = std::min(rowCount - 1, static_cast<int>(std::ceil(column.head)) + 1);
 
-    for (int row = minRow; row <= maxRow; ++row) {
-      auto &timer = column.mutationTimers[static_cast<std::size_t>(row)];
-      timer -= deltaSeconds;
+      for (int row = minRow; row <= maxRow; ++row) {
+        auto &timer = column.mutationTimers[static_cast<std::size_t>(row)];
+        timer -= deltaSeconds;
 
-      if (timer <= 0.0f) {
-        column.glyphs[static_cast<std::size_t>(row)] = randomGlyphIndex(app.rng, app.glyphAtlas.size());
-        timer = randomFloat(app.rng, 0.04f, 0.28f);
+        if (timer <= 0.0f) {
+          column.glyphs[static_cast<std::size_t>(row)] = randomGlyphIndex(app.rng, app.glyphAtlas.size());
+          timer = randomFloat(app.rng, 0.04f, 0.28f) / layer.mutationMultiplier;
+        }
       }
-    }
 
-    if (randomFloat(app.rng, 0.0f, 1.0f) < deltaSeconds * 8.0f) {
-      const int row = randomInt(app.rng, 0, rowCount - 1);
-      column.glyphs[static_cast<std::size_t>(row)] = randomGlyphIndex(app.rng, app.glyphAtlas.size());
-      column.mutationTimers[static_cast<std::size_t>(row)] = randomFloat(app.rng, 0.04f, 0.24f);
-    }
+      if (randomFloat(app.rng, 0.0f, 1.0f) < deltaSeconds * 8.0f * layer.mutationMultiplier) {
+        const int row = randomInt(app.rng, 0, rowCount - 1);
+        column.glyphs[static_cast<std::size_t>(row)] = randomGlyphIndex(app.rng, app.glyphAtlas.size());
+        column.mutationTimers[static_cast<std::size_t>(row)] = randomFloat(app.rng, 0.04f, 0.24f) / layer.mutationMultiplier;
+      }
 
-    if (randomFloat(app.rng, 0.0f, 1.0f) < deltaSeconds * (1.6f + (column.intensity * 1.5f))) {
-      column.headPulse = std::max(column.headPulse, randomFloat(app.rng, 0.4f, 1.0f));
-    }
+      if (randomFloat(app.rng, 0.0f, 1.0f) <
+          deltaSeconds * (1.5f + (column.intensity * 1.4f)) * layer.pulseMultiplier) {
+        column.headPulse = std::max(column.headPulse, randomFloat(app.rng, 0.4f, 1.0f) * layer.pulseMultiplier);
+      }
 
-    if (column.head - static_cast<float>(column.trailLength) >
-        static_cast<float>(rowCount) + column.respawnGap) {
-      resetColumn(app, column, false);
+      if (column.head - static_cast<float>(column.trailLength) >
+          static_cast<float>(rowCount) + column.respawnGap) {
+        resetColumn(app, layer, column, false);
+      }
     }
   }
 }
@@ -511,9 +615,9 @@ void configureProjection(const Layout &layout) {
   glLoadIdentity();
 }
 
-float computeColumnOffset(const AppState &app, const Column &column, float rowPosition) {
+float computeColumnOffset(const AppState &app, const RainLayer &layer, const Column &column, float rowPosition) {
   if (!app.config.sway) {
-    return 0.0f;
+    return column.xOffset;
   }
 
   const float primary =
@@ -522,7 +626,7 @@ float computeColumnOffset(const AppState &app, const Column &column, float rowPo
   const float secondary =
       std::sin((static_cast<float>(app.timeSeconds) * (column.swayFrequency * 0.42f)) + (column.phase * 1.7f) -
                (rowPosition * (column.swayDrift * 0.65f)));
-  return ((primary * 0.74f) + (secondary * 0.26f)) * column.swayAmplitude * app.layout.cellWidth;
+  return column.xOffset + (((primary * 0.74f) + (secondary * 0.26f)) * column.swayAmplitude * layer.layout.cellWidth);
 }
 
 void drawBackground(const AppState &app) {
@@ -560,20 +664,22 @@ void drawBackground(const AppState &app) {
                   {0.0f, 0.07f, 0.02f, 0.0f});
 }
 
-Color makeCoreColor(const Column &column, float intensity, float shimmer, bool isHead) {
-  const float accent = column.tint;
+Color makeCoreColor(const RainLayer &layer, const Column &column, float intensity, float shimmer, bool isHead) {
+  const float accent = saturate(column.tint + layer.accentBias);
 
   if (isHead) {
     return {
         std::clamp(0.78f + (accent * 0.08f), 0.0f, 1.0f),
         1.0f,
         std::clamp(0.88f + (column.headPulse * 0.08f) + (accent * 0.08f), 0.0f, 1.0f),
-        std::clamp(0.92f + (column.headPulse * 0.10f), 0.0f, 1.0f),
+        std::clamp((0.92f + (column.headPulse * 0.10f)) * std::lerp(0.8f, 1.0f, layer.alphaMultiplier), 0.0f, 1.0f),
     };
   }
 
   const float alpha =
-      std::clamp((0.10f + (intensity * 0.82f) + (column.headPulse * 0.10f)) * column.intensity, 0.0f, 0.94f);
+      std::clamp((0.10f + (intensity * 0.82f) + (column.headPulse * 0.10f)) * column.intensity * layer.alphaMultiplier,
+                 0.0f,
+                 0.94f);
   const Color emeraldBase = {
       std::clamp(0.010f + (intensity * 0.05f), 0.0f, 0.24f),
       std::clamp(0.24f + (intensity * 0.72f) + (shimmer * 0.08f), 0.0f, 1.0f),
@@ -589,8 +695,8 @@ Color makeCoreColor(const Column &column, float intensity, float shimmer, bool i
   return withAlpha(mixColor(emeraldBase, coolVariant, (accent * 0.55f) + (column.headPulse * 0.15f)), alpha);
 }
 
-Color makeGlowColor(const Column &column, float intensity, bool isHead) {
-  const float accent = column.tint;
+Color makeGlowColor(const RainLayer &layer, const Column &column, float intensity, bool isHead) {
+  const float accent = saturate(column.tint + layer.accentBias);
 
   if (isHead) {
     return scaleAlpha(Color {
@@ -598,25 +704,29 @@ Color makeGlowColor(const Column &column, float intensity, bool isHead) {
         0.95f,
         std::clamp(0.16f + (accent * 0.12f), 0.0f, 0.4f),
         std::clamp(0.22f + (column.headPulse * 0.22f), 0.0f, 0.5f),
-    }, 1.0f + (column.headPulse * 0.2f));
+    }, (1.0f + (column.headPulse * 0.2f)) * layer.glowMultiplier);
   }
 
-  return {
+  return scaleAlpha({
       0.0f,
       std::clamp(0.08f + (intensity * 0.28f) + (accent * 0.04f), 0.0f, 0.5f),
       std::clamp(0.015f + (accent * 0.03f), 0.0f, 0.12f),
       intensity * (0.08f + (column.headPulse * 0.06f)),
-  };
+  }, layer.glowMultiplier);
 }
 
-void drawColumnVeils(const AppState &app) {
-  const Layout &layout = app.layout;
+void drawColumnVeils(const AppState &app, const RainLayer &layer) {
+  const Layout &layout = layer.layout;
+
+  if (layer.columns.empty()) {
+    return;
+  }
 
   glBlendFunc(GL_SRC_ALPHA, GL_ONE);
   glBegin(GL_QUADS);
 
-  for (std::size_t columnIndex = 0; columnIndex < app.columns.size(); ++columnIndex) {
-    const Column &column = app.columns[columnIndex];
+  for (std::size_t columnIndex = 0; columnIndex < layer.columns.size(); ++columnIndex) {
+    const Column &column = layer.columns[columnIndex];
     const float trailTopRow = std::max(0.0f, column.head - static_cast<float>(column.trailLength));
     const float trailBottomRow = std::min(static_cast<float>(layout.rows), column.head + 1.35f);
 
@@ -624,7 +734,7 @@ void drawColumnVeils(const AppState &app) {
       continue;
     }
 
-    const float headOffset = computeColumnOffset(app, column, column.head);
+    const float headOffset = computeColumnOffset(app, layer, column, column.head);
     const float centerX = (static_cast<float>(columnIndex) * layout.cellWidth) + layout.glyphOffsetX +
                           (layout.pixelSize * (kGlyphWidth * 0.5f)) + headOffset;
     const float topY = (trailTopRow * layout.cellHeight) + layout.glyphOffsetY;
@@ -637,9 +747,12 @@ void drawColumnVeils(const AppState &app) {
 
     const Color outerTop = {0.0f, 0.16f, 0.04f, 0.0f};
     const Color outerBottom = {0.01f, 0.34f + (column.tint * 0.08f), 0.06f + (column.tint * 0.04f),
-                               0.04f + (column.headPulse * 0.09f)};
+                               (0.04f + (column.headPulse * 0.09f)) * layer.veilMultiplier};
     const Color innerTop = {0.02f, 0.26f, 0.08f, 0.0f};
-    const Color innerBottom = {0.08f, 0.80f, 0.18f + (column.tint * 0.08f), 0.03f + (column.headPulse * 0.10f)};
+    const Color innerBottom = {0.08f,
+                               0.80f,
+                               0.18f + (column.tint * 0.08f),
+                               (0.03f + (column.headPulse * 0.10f)) * layer.veilMultiplier};
 
     emitVerticalGradientRect(centerX - (outerWidth * 0.5f), topY, outerWidth, height, outerTop, outerBottom);
     emitVerticalGradientRect(centerX - (innerWidth * 0.5f),
@@ -652,30 +765,33 @@ void drawColumnVeils(const AppState &app) {
 
   glEnd();
 
-  for (std::size_t columnIndex = 0; columnIndex < app.columns.size(); ++columnIndex) {
-    const Column &column = app.columns[columnIndex];
+  for (std::size_t columnIndex = 0; columnIndex < layer.columns.size(); ++columnIndex) {
+    const Column &column = layer.columns[columnIndex];
     if (column.head < -1.0f || column.head > static_cast<float>(layout.rows) + 1.0f) {
       continue;
     }
 
-    const float headOffset = computeColumnOffset(app, column, column.head);
+    const float headOffset = computeColumnOffset(app, layer, column, column.head);
     const float headX = (static_cast<float>(columnIndex) * layout.cellWidth) + layout.glyphOffsetX +
                         (layout.pixelSize * (kGlyphWidth * 0.5f)) + headOffset;
     const float headY = (column.head * layout.cellHeight) + layout.glyphOffsetY + (layout.pixelSize * 3.5f);
-    const float pulseScale = 1.0f + (column.headPulse * 0.45f);
+    const float pulseScale = 1.0f + (column.headPulse * 0.45f * layer.pulseMultiplier);
 
     drawSoftEllipse(headX,
                     headY,
                     layout.cellWidth * 0.95f * pulseScale,
                     layout.cellHeight * 0.85f * pulseScale,
-                    {0.12f, 0.92f, 0.22f + (column.tint * 0.08f), 0.10f + (column.headPulse * 0.12f)},
+                    {0.12f,
+                     0.92f,
+                     0.22f + (column.tint * 0.08f),
+                     (0.10f + (column.headPulse * 0.12f)) * layer.veilMultiplier},
                     {0.0f, 0.72f, 0.15f, 0.0f},
                     28);
     drawSoftEllipse(headX,
                     headY,
                     layout.cellWidth * 1.85f * pulseScale,
                     layout.cellHeight * 1.45f * pulseScale,
-                    {0.02f, 0.35f, 0.09f, 0.03f + (column.headPulse * 0.06f)},
+                    {0.02f, 0.35f, 0.09f, (0.03f + (column.headPulse * 0.06f)) * layer.veilMultiplier},
                     {0.0f, 0.24f, 0.05f, 0.0f},
                     28);
   }
@@ -683,13 +799,17 @@ void drawColumnVeils(const AppState &app) {
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
-void drawRainGlyphs(const AppState &app, bool glowPass) {
+void drawRainGlyphs(const AppState &app, const RainLayer &layer, bool glowPass) {
+  if (layer.columns.empty()) {
+    return;
+  }
+
   glBegin(GL_QUADS);
 
-  for (std::size_t columnIndex = 0; columnIndex < app.columns.size(); ++columnIndex) {
-    const Column &column = app.columns[columnIndex];
+  for (std::size_t columnIndex = 0; columnIndex < layer.columns.size(); ++columnIndex) {
+    const Column &column = layer.columns[columnIndex];
     const int startRow = std::max(0, static_cast<int>(std::floor(column.head)) - column.trailLength);
-    const int endRow = std::min(app.layout.rows - 1, static_cast<int>(std::ceil(column.head)));
+    const int endRow = std::min(layer.layout.rows - 1, static_cast<int>(std::ceil(column.head)));
 
     for (int row = startRow; row <= endRow; ++row) {
       const float distanceFromHead = column.head - static_cast<float>(row);
@@ -703,19 +823,21 @@ void drawRainGlyphs(const AppState &app, bool glowPass) {
       const float shimmer =
           std::sin(static_cast<float>(app.timeSeconds) * 7.5f + column.phase + (static_cast<float>(row) * 0.55f));
 
-      const float offset = computeColumnOffset(app, column, static_cast<float>(row));
-      const float x = (static_cast<float>(columnIndex) * app.layout.cellWidth) + app.layout.glyphOffsetX + offset;
-      const float y = (static_cast<float>(row) * app.layout.cellHeight) + app.layout.glyphOffsetY;
+      const float offset = computeColumnOffset(app, layer, column, static_cast<float>(row));
+      const float x = (static_cast<float>(columnIndex) * layer.layout.cellWidth) + layer.layout.glyphOffsetX + offset;
+      const float y = (static_cast<float>(row) * layer.layout.cellHeight) + layer.layout.glyphOffsetY;
       const Glyph &glyph = app.glyphAtlas[column.glyphs[static_cast<std::size_t>(row)]];
 
       if (glowPass) {
-        const Color glowColor = makeGlowColor(column, intensity, isHead);
+        const Color glowColor = makeGlowColor(layer, column, intensity, isHead);
         const float glowExpansion =
-            app.layout.pixelSize * (0.65f + (intensity * 0.40f) + (isHead ? (0.30f + (column.headPulse * 0.25f)) : 0.0f));
-        emitGlyph(glyph, x, y, app.layout.pixelSize, glowColor, glowExpansion);
+            layer.layout.pixelSize *
+            (0.65f + (intensity * 0.40f) + (isHead ? (0.30f + (column.headPulse * 0.25f)) : 0.0f)) *
+            std::lerp(0.92f, 1.08f, layer.glowMultiplier * 0.5f);
+        emitGlyph(glyph, x, y, layer.layout.pixelSize, glowColor, glowExpansion);
       } else {
-        const Color coreColor = makeCoreColor(column, intensity, shimmer, isHead);
-        emitGlyph(glyph, x, y, app.layout.pixelSize, coreColor, 0.0f);
+        const Color coreColor = makeCoreColor(layer, column, intensity, shimmer, isHead);
+        emitGlyph(glyph, x, y, layer.layout.pixelSize, coreColor, 0.0f);
       }
     }
   }
@@ -785,13 +907,19 @@ void renderScene(const AppState &app) {
 
   configureProjection(app.layout);
   drawBackground(app);
-  drawColumnVeils(app);
+  for (const RainLayer &layer : app.rainLayers) {
+    drawColumnVeils(app, layer);
+  }
 
   glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-  drawRainGlyphs(app, true);
+  for (const RainLayer &layer : app.rainLayers) {
+    drawRainGlyphs(app, layer, true);
+  }
 
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  drawRainGlyphs(app, false);
+  for (const RainLayer &layer : app.rainLayers) {
+    drawRainGlyphs(app, layer, false);
+  }
   drawForegroundEffects(app);
 }
 
@@ -987,6 +1115,7 @@ int main(int argc, char **argv) {
   AppState app {};
   app.config = config;
   app.glyphAtlas = buildGlyphAtlas();
+  app.rainLayers = createRainLayers();
   app.rng = std::mt19937(seed);
 
   int framebufferWidth = 0;

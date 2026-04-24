@@ -16,6 +16,7 @@ It is not yet packaged as a native OS-level screensaver.
 ## Features
 
 - procedural glyph generation with no external assets;
+- layered rain rendering with separate background, mid, and foreground streams;
 - animated streams with different speeds, trail lengths, and flicker;
 - fullscreen or resizable windowed launch modes;
 - compact codebase that is easy to extend.
