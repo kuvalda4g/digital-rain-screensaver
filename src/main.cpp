@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -23,6 +24,14 @@ constexpr int kGlyphCount = 48;
 constexpr float kPi = 3.14159265358979323846f;
 
 using Glyph = std::array<std::uint8_t, kGlyphHeight>;
+using GlyphPattern = std::array<std::string_view, kGlyphHeight>;
+
+enum class GlyphSet {
+  Procedural,
+  PseudoKatakana,
+  Techno,
+  CustomCharset,
+};
 
 struct Color {
   float r {};
@@ -36,6 +45,8 @@ struct Config {
   bool sway = false;
   int width = 1280;
   int height = 720;
+  GlyphSet glyphSet = GlyphSet::Procedural;
+  std::string customCharset;
   std::optional<std::uint32_t> seed;
   bool showHelp = false;
 };
@@ -283,13 +294,286 @@ Glyph buildProceduralGlyph(int glyphIndex) {
   return glyph;
 }
 
-std::vector<Glyph> buildGlyphAtlas() {
+Glyph glyphFromPattern(const GlyphPattern &rows) {
+  Glyph glyph {};
+
+  for (int y = 0; y < kGlyphHeight; ++y) {
+    const std::string_view row = rows[static_cast<std::size_t>(y)];
+    for (int x = 0; x < kGlyphWidth && x < static_cast<int>(row.size()); ++x) {
+      const char pixel = row[static_cast<std::size_t>(x)];
+      if (pixel != '.' && pixel != ' ') {
+        setPixel(glyph, x, y);
+      }
+    }
+  }
+
+  return glyph;
+}
+
+std::vector<Glyph> buildProceduralGlyphSet() {
   std::vector<Glyph> atlas;
   atlas.reserve(kGlyphCount);
   for (int index = 0; index < kGlyphCount; ++index) {
     atlas.push_back(buildProceduralGlyph(index));
   }
   return atlas;
+}
+
+std::vector<Glyph> buildPseudoKatakanaGlyphSet() {
+  return {
+      glyphFromPattern({"..#..", ".###.", "..#..", "..#..", ".#...", "#....", "....."}),
+      glyphFromPattern({".###.", "...#.", "..#..", ".#...", "#....", ".....", "....."}),
+      glyphFromPattern({"#####", "...#.", "..#..", ".#...", "#####", ".....", "....."}),
+      glyphFromPattern({"#...#", ".#.#.", "..#..", "..#..", ".#...", "#....", "....."}),
+      glyphFromPattern({".###.", "#...#", "....#", "..##.", ".#...", "#....", "....."}),
+      glyphFromPattern({"####.", "...#.", "..#..", ".#...", "#....", "#....", "....."}),
+      glyphFromPattern({"#####", "..#..", "..#..", "..#..", ".#...", "#....", "....."}),
+      glyphFromPattern({"#...#", "#...#", ".###.", "...#.", "..#..", ".#...", "#...."}),
+      glyphFromPattern({".####", "#....", "#....", ".###.", "...#.", "..#..", ".#..."}),
+      glyphFromPattern({"#....", "##...", "#.#..", "#..#.", "#...#", ".###.", "....."}),
+      glyphFromPattern({".###.", "#....", "#....", "#....", "#..#.", ".##..", "....."}),
+      glyphFromPattern({"#####", "#....", "###..", "#....", "#....", "#####", "....."}),
+      glyphFromPattern({"#...#", "##.##", "#.#.#", "#...#", ".###.", "..#..", "....."}),
+      glyphFromPattern({"###..", "#..#.", "###..", "#..#.", "#..#.", "###..", "....."}),
+      glyphFromPattern({"..#..", ".#.#.", "#...#", "#####", "...#.", "..#..", ".#..."}),
+      glyphFromPattern({".###.", "#...#", "...#.", "..#..", ".#...", "#...#", ".###."}),
+      glyphFromPattern({"#####", "#...#", "...#.", "..#..", ".#...", "#....", "#####"}),
+      glyphFromPattern({"#..#.", "#..#.", ".##..", "..#..", ".##..", "#..#.", "#..#."}),
+      glyphFromPattern({".#.#.", "#.#.#", ".###.", "..#..", ".###.", "#.#.#", ".#.#."}),
+      glyphFromPattern({"##..#", "..#..", ".###.", "#...#", ".###.", "..#..", "#..##"}),
+  };
+}
+
+std::vector<Glyph> buildTechnoGlyphSet() {
+  return {
+      glyphFromPattern({".###.", "#...#", "#.#.#", "#.#.#", "#...#", ".###.", "....."}),
+      glyphFromPattern({"#####", "#.#.#", "..#..", "#.#.#", "#####", ".....", "....."}),
+      glyphFromPattern({"#...#", ".#.#.", "..#..", ".#.#.", "#...#", ".....", "....."}),
+      glyphFromPattern({"###..", "#..#.", "###..", "#..#.", "#..#.", "###..", "....."}),
+      glyphFromPattern({"#####", "#....", "####.", "#....", "#....", "#####", "....."}),
+      glyphFromPattern({".####", "#....", "#.###", "#...#", "#...#", ".###.", "....."}),
+      glyphFromPattern({"##.##", "#.#.#", ".###.", "..#..", ".###.", "#.#.#", "##.##"}),
+      glyphFromPattern({"#...#", "##..#", "#.#.#", "#..##", "#...#", ".....", "....."}),
+      glyphFromPattern({"..#..", ".###.", "#####", ".###.", "..#..", ".....", "....."}),
+      glyphFromPattern({"#.#.#", "#####", ".###.", "..#..", ".###.", "#####", "#.#.#"}),
+      glyphFromPattern({"###.#", "#..#.", "..#..", ".#...", "#..#.", "###.#", "....."}),
+      glyphFromPattern({"#....", ".#...", "..#..", "...#.", "....#", "...#.", "..#.."}),
+      glyphFromPattern({"..#..", ".##..", "#####", ".##..", "..#..", ".##..", "#####"}),
+      glyphFromPattern({"#####", "##.##", "#.#.#", "..#..", "#.#.#", "##.##", "#####"}),
+      glyphFromPattern({"##..#", ".#.#.", "..#..", ".#.#.", "#..##", ".....", "....."}),
+      glyphFromPattern({".###.", "#.#.#", "##.##", "#...#", "##.##", "#.#.#", ".###."}),
+      glyphFromPattern({"#####", "...#.", "..#..", ".#...", "#....", "#####", "....."}),
+      glyphFromPattern({".#.#.", "#.#.#", ".#.#.", "#####", ".#.#.", "#.#.#", ".#.#."}),
+      glyphFromPattern({"#####", "#...#", "#.#.#", "..#..", "#.#.#", "#...#", "#####"}),
+      glyphFromPattern({".###.", "#...#", "..#..", ".###.", "..#..", "#...#", ".###."}),
+  };
+}
+
+std::optional<Glyph> tryBuildAsciiGlyph(char symbol) {
+  switch (symbol) {
+    case 'A':
+      return glyphFromPattern({".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"});
+    case 'B':
+      return glyphFromPattern({"####.", "#...#", "####.", "#...#", "#...#", "#...#", "####."});
+    case 'C':
+      return glyphFromPattern({".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."});
+    case 'D':
+      return glyphFromPattern({"####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."});
+    case 'E':
+      return glyphFromPattern({"#####", "#....", "####.", "#....", "#....", "#....", "#####"});
+    case 'F':
+      return glyphFromPattern({"#####", "#....", "####.", "#....", "#....", "#....", "#...."});
+    case 'G':
+      return glyphFromPattern({".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".###."});
+    case 'H':
+      return glyphFromPattern({"#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"});
+    case 'I':
+      return glyphFromPattern({"#####", "..#..", "..#..", "..#..", "..#..", "..#..", "#####"});
+    case 'J':
+      return glyphFromPattern({"..###", "...#.", "...#.", "...#.", "#..#.", "#..#.", ".##.."});
+    case 'K':
+      return glyphFromPattern({"#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"});
+    case 'L':
+      return glyphFromPattern({"#....", "#....", "#....", "#....", "#....", "#....", "#####"});
+    case 'M':
+      return glyphFromPattern({"#...#", "##.##", "#.#.#", "#...#", "#...#", "#...#", "#...#"});
+    case 'N':
+      return glyphFromPattern({"#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"});
+    case 'O':
+      return glyphFromPattern({".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."});
+    case 'P':
+      return glyphFromPattern({"####.", "#...#", "#...#", "####.", "#....", "#....", "#...."});
+    case 'Q':
+      return glyphFromPattern({".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"});
+    case 'R':
+      return glyphFromPattern({"####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"});
+    case 'S':
+      return glyphFromPattern({".####", "#....", "#....", ".###.", "....#", "....#", "####."});
+    case 'T':
+      return glyphFromPattern({"#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."});
+    case 'U':
+      return glyphFromPattern({"#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."});
+    case 'V':
+      return glyphFromPattern({"#...#", "#...#", "#...#", "#...#", ".#.#.", ".#.#.", "..#.."});
+    case 'W':
+      return glyphFromPattern({"#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"});
+    case 'X':
+      return glyphFromPattern({"#...#", ".#.#.", "..#..", "..#..", "..#..", ".#.#.", "#...#"});
+    case 'Y':
+      return glyphFromPattern({"#...#", ".#.#.", "..#..", "..#..", "..#..", "..#..", "..#.."});
+    case 'Z':
+      return glyphFromPattern({"#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"});
+    case '0':
+      return glyphFromPattern({".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."});
+    case '1':
+      return glyphFromPattern({"..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."});
+    case '2':
+      return glyphFromPattern({".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"});
+    case '3':
+      return glyphFromPattern({"####.", "....#", "...#.", "..##.", "....#", "#...#", ".###."});
+    case '4':
+      return glyphFromPattern({"...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."});
+    case '5':
+      return glyphFromPattern({"#####", "#....", "####.", "....#", "....#", "#...#", ".###."});
+    case '6':
+      return glyphFromPattern({".###.", "#...#", "#....", "####.", "#...#", "#...#", ".###."});
+    case '7':
+      return glyphFromPattern({"#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."});
+    case '8':
+      return glyphFromPattern({".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."});
+    case '9':
+      return glyphFromPattern({".###.", "#...#", "#...#", ".####", "....#", "#...#", ".###."});
+    case '#':
+      return glyphFromPattern({".#.#.", "#####", ".#.#.", "#####", ".#.#.", ".....", "....."});
+    case '@':
+      return glyphFromPattern({".###.", "#...#", "#.###", "#.#.#", "#.###", "#....", ".####"});
+    case '%':
+      return glyphFromPattern({"##..#", "##.#.", "...#.", "..#..", ".#...", "#.##.", "#..##"});
+    case '+':
+      return glyphFromPattern({".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."});
+    case '-':
+      return glyphFromPattern({".....", ".....", "#####", ".....", ".....", ".....", "....."});
+    case '*':
+      return glyphFromPattern({".....", "#.#.#", ".###.", "#####", ".###.", "#.#.#", "....."});
+    case '/':
+      return glyphFromPattern({"....#", "...#.", "..#..", ".#...", "#....", ".....", "....."});
+    case '\\':
+      return glyphFromPattern({"#....", ".#...", "..#..", "...#.", "....#", ".....", "....."});
+    case '!':
+      return glyphFromPattern({"..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."});
+    case '?':
+      return glyphFromPattern({".###.", "#...#", "...#.", "..#..", "..#..", ".....", "..#.."});
+    case '<':
+      return glyphFromPattern({"...#.", "..#..", ".#...", "#....", ".#...", "..#..", "...#."});
+    case '>':
+      return glyphFromPattern({".#...", "..#..", "...#.", "....#", "...#.", "..#..", ".#..."});
+    case '[':
+      return glyphFromPattern({".###.", ".#...", ".#...", ".#...", ".#...", ".#...", ".###."});
+    case ']':
+      return glyphFromPattern({".###.", "...#.", "...#.", "...#.", "...#.", "...#.", ".###."});
+    case '(':
+      return glyphFromPattern({"...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#."});
+    case ')':
+      return glyphFromPattern({".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#..."});
+    case '|':
+      return glyphFromPattern({"..#..", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."});
+    case '_':
+      return glyphFromPattern({".....", ".....", ".....", ".....", ".....", ".....", "#####"});
+    case '=':
+      return glyphFromPattern({".....", "#####", ".....", "#####", ".....", ".....", "....."});
+    case ':':
+      return glyphFromPattern({".....", "..#..", ".....", ".....", "..#..", ".....", "....."});
+    case '.':
+      return glyphFromPattern({".....", ".....", ".....", ".....", ".....", ".....", "..#.."});
+    default:
+      return std::nullopt;
+  }
+}
+
+char normalizeCharsetSymbol(unsigned char symbol) {
+  if (std::isalpha(symbol) != 0) {
+    return static_cast<char>(std::toupper(symbol));
+  }
+
+  return static_cast<char>(symbol);
+}
+
+std::vector<Glyph> buildCustomCharsetGlyphSet(std::string_view charset) {
+  std::vector<Glyph> atlas;
+  std::string uniqueSymbols;
+
+  for (unsigned char rawSymbol : charset) {
+    if (std::isspace(rawSymbol) != 0) {
+      continue;
+    }
+
+    const char symbol = normalizeCharsetSymbol(rawSymbol);
+    if (uniqueSymbols.find(symbol) != std::string::npos) {
+      continue;
+    }
+
+    uniqueSymbols.push_back(symbol);
+    if (const auto glyph = tryBuildAsciiGlyph(symbol); glyph.has_value()) {
+      atlas.push_back(*glyph);
+    } else {
+      atlas.push_back(buildProceduralGlyph(static_cast<int>(rawSymbol) + (static_cast<int>(atlas.size()) * 17)));
+    }
+  }
+
+  if (atlas.empty()) {
+    return buildProceduralGlyphSet();
+  }
+
+  return atlas;
+}
+
+std::optional<GlyphSet> parseGlyphSetName(std::string_view text) {
+  std::string normalized;
+  normalized.reserve(text.size());
+
+  for (unsigned char symbol : text) {
+    normalized.push_back(static_cast<char>(std::tolower(symbol)));
+  }
+
+  if (normalized == "procedural" || normalized == "abstract") {
+    return GlyphSet::Procedural;
+  }
+  if (normalized == "pseudo-katakana" || normalized == "pseudo_katakana" || normalized == "katakana") {
+    return GlyphSet::PseudoKatakana;
+  }
+  if (normalized == "techno" || normalized == "techno-symbols" || normalized == "techno_symbols") {
+    return GlyphSet::Techno;
+  }
+  if (normalized == "custom" || normalized == "charset") {
+    return GlyphSet::CustomCharset;
+  }
+
+  return std::nullopt;
+}
+
+bool hasVisibleCharsetSymbols(std::string_view text) {
+  for (unsigned char symbol : text) {
+    if (std::isspace(symbol) == 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+std::vector<Glyph> buildGlyphAtlas(const Config &config) {
+  switch (config.glyphSet) {
+    case GlyphSet::Procedural:
+      return buildProceduralGlyphSet();
+    case GlyphSet::PseudoKatakana:
+      return buildPseudoKatakanaGlyphSet();
+    case GlyphSet::Techno:
+      return buildTechnoGlyphSet();
+    case GlyphSet::CustomCharset:
+      return buildCustomCharsetGlyphSet(config.customCharset);
+  }
+
+  return buildProceduralGlyphSet();
 }
 
 float clampDelta(double value) {
@@ -951,7 +1235,8 @@ void mouseButtonCallback(GLFWwindow *window, int button, int action, int) {
 
 void printUsage(std::string_view executableName) {
   std::cout
-      << "Usage: " << executableName << " [--fullscreen] [--width N --height N] [--seed N] [--sway]\n"
+      << "Usage: " << executableName
+      << " [--fullscreen] [--width N --height N] [--seed N] [--sway] [--glyph-set NAME] [--charset TEXT]\n"
       << "       " << executableName << " [--windowed]\n\n"
       << "Options:\n"
       << "  --fullscreen   Launch on the primary monitor in fullscreen mode\n"
@@ -960,6 +1245,8 @@ void printUsage(std::string_view executableName) {
       << "  --height N     Window height in pixels for windowed mode\n"
       << "  --seed N       Use a fixed random seed for repeatable visuals\n"
       << "  --sway         Enable horizontal sway for rain columns\n"
+      << "  --glyph-set    Glyph preset: procedural, pseudo-katakana, techno, custom\n"
+      << "  --charset      Use a custom ASCII charset; implies --glyph-set custom\n"
       << "  --help         Show this help\n\n"
       << "Controls:\n"
       << "  Esc / Q        Exit\n"
@@ -1017,6 +1304,32 @@ Config parseArgs(int argc, char **argv) {
       continue;
     }
 
+    if (argument == "--glyph-set") {
+      if (index + 1 >= argc) {
+        throw std::runtime_error("--glyph-set expects one of: procedural, pseudo-katakana, techno, custom");
+      }
+
+      const auto glyphSet = parseGlyphSetName(argv[index + 1]);
+      if (!glyphSet.has_value()) {
+        throw std::runtime_error("Unknown glyph set. Use: procedural, pseudo-katakana, techno, custom");
+      }
+
+      config.glyphSet = *glyphSet;
+      ++index;
+      continue;
+    }
+
+    if (argument == "--charset") {
+      if (index + 1 >= argc || !hasVisibleCharsetSymbols(argv[index + 1])) {
+        throw std::runtime_error("--charset expects a non-empty string with visible characters");
+      }
+
+      config.customCharset = argv[index + 1];
+      config.glyphSet = GlyphSet::CustomCharset;
+      ++index;
+      continue;
+    }
+
     if (argument == "--help" || argument == "-h") {
       config.showHelp = true;
       continue;
@@ -1053,6 +1366,10 @@ Config parseArgs(int argc, char **argv) {
 
   if (config.width <= 0 || config.height <= 0) {
     throw std::runtime_error("Window size must be positive");
+  }
+
+  if (config.glyphSet == GlyphSet::CustomCharset && !hasVisibleCharsetSymbols(config.customCharset)) {
+    throw std::runtime_error("--glyph-set custom requires --charset with at least one visible character");
   }
 
   return config;
@@ -1114,7 +1431,7 @@ int main(int argc, char **argv) {
 
   AppState app {};
   app.config = config;
-  app.glyphAtlas = buildGlyphAtlas();
+  app.glyphAtlas = buildGlyphAtlas(config);
   app.rainLayers = createRainLayers();
   app.rng = std::mt19937(seed);
 

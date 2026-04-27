@@ -2,7 +2,7 @@
 
 A small cross-platform screensaver prototype built with `C++`, `GLFW`, and classic `OpenGL`.
 
-The project renders a fullscreen or windowed "digital rain" scene inspired by classic cyberpunk terminal visuals. It uses procedural glyphs, so there are no external font or texture assets to ship.
+The project renders a fullscreen or windowed "digital rain" scene inspired by classic cyberpunk terminal visuals. It uses built-in bitmap glyph sets, so there are no external font or texture assets to ship.
 
 ## Status
 
@@ -16,6 +16,7 @@ It is not yet packaged as a native OS-level screensaver.
 ## Features
 
 - procedural glyph generation with no external assets;
+- multiple glyph modes, including pseudo-katakana, techno symbols, and custom charsets;
 - layered rain rendering with separate background, mid, and foreground streams;
 - animated streams with different speeds, trail lengths, and flicker;
 - fullscreen or resizable windowed launch modes;
@@ -67,6 +68,24 @@ Enable horizontal sway:
 
 ```bash
 ./build/digital-rain-screensaver --sway
+```
+
+Pseudo-katakana glyphs:
+
+```bash
+./build/digital-rain-screensaver --glyph-set pseudo-katakana
+```
+
+Techno glyphs:
+
+```bash
+./build/digital-rain-screensaver --glyph-set techno
+```
+
+Custom ASCII charset:
+
+```bash
+./build/digital-rain-screensaver --charset "NEURO-01#"
 ```
 
 Custom window size:
