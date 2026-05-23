@@ -8,10 +8,11 @@ The project renders a fullscreen or windowed "digital rain" scene inspired by cl
 
 This repository currently contains the rendering core:
 - runs as a regular desktop application on Windows and Linux;
+- builds as a native `.scr` screensaver on Windows with `/s`, `/c`, and `/p` support;
 - supports fullscreen and windowed modes;
 - is intended to become the base for future platform-specific screensaver wrappers.
 
-It is not yet packaged as a native OS-level screensaver.
+Linux is still used as a regular application or launcher target rather than a native desktop-environment screensaver package.
 
 ## Features
 
@@ -48,7 +49,8 @@ sudo apt install build-essential cmake libglfw3-dev mesa-common-dev
 
 - install GLFW and make it visible to CMake, for example through `vcpkg`;
 - generate the project with CMake;
-- build it with Visual Studio or Ninja.
+- build it with Visual Studio or Ninja;
+- the resulting executable is emitted as `digital-rain-screensaver.scr`.
 
 ## Run
 
@@ -62,6 +64,18 @@ Fullscreen mode:
 
 ```bash
 ./build/digital-rain-screensaver --fullscreen
+```
+
+Windows screensaver mode:
+
+```bash
+digital-rain-screensaver.scr /s
+```
+
+Windows configuration placeholder:
+
+```bash
+digital-rain-screensaver.scr /c
 ```
 
 Enable horizontal sway:
@@ -103,11 +117,11 @@ Custom window size:
 
 This project is the rendering core only. A real OS-level screensaver still needs platform-specific integration:
 
-- Windows: `.scr` wrapper and support for `/s`, `/c`, and `/p`;
+- Windows: native `.scr` wrapper is in place, with a placeholder config dialog and GLFW-based preview embedding for `/p`;
 - Linux: integration depends on the target desktop environment, for example `xscreensaver` or a standalone fullscreen launcher.
 
 ## Roadmap
 
-- add a Windows `.scr` wrapper;
+- add a real Windows configuration UI and persistent settings;
 - add Linux-oriented launcher/integration options;
 - improve the visual style with more variation and configuration.

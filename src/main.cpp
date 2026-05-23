@@ -1,5 +1,12 @@
 #include <GLFW/glfw3.h>
 
+#ifdef _WIN32
+#define NOMINMAX
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#include <shellapi.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -33,6 +40,14 @@ enum class GlyphSet {
   CustomCharset,
 };
 
+enum class LaunchMode {
+  Standard,
+  ScreensaverFullscreen,
+  ScreensaverPreview,
+  ConfigurationDialog,
+  PasswordChange,
+};
+
 struct Color {
   float r {};
   float g {};
@@ -49,6 +64,12 @@ struct Config {
   std::string customCharset;
   std::optional<std::uint32_t> seed;
   bool showHelp = false;
+};
+
+struct LaunchOptions {
+  Config config;
+  LaunchMode mode = LaunchMode::Standard;
+  std::uintptr_t nativeParentWindow = 0;
 };
 
 struct Layout {
@@ -103,6 +124,17 @@ struct AppState {
   std::array<RainLayer, 3> rainLayers;
   std::mt19937 rng;
   double timeSeconds = 0.0;
+  bool closeOnAnyKey = false;
+  bool closeOnMouseButton = true;
+  bool closeOnMouseMove = false;
+  bool previewMode = false;
+  bool mouseBaselineCaptured = false;
+  double mouseBaselineX = 0.0;
+  double mouseBaselineY = 0.0;
+  double mouseMoveThreshold = 8.0;
+#ifdef _WIN32
+  std::uintptr_t previewParentWindow = 0;
+#endif
 };
 
 std::uint64_t splitmix64(std::uint64_t &state) {
@@ -1218,7 +1250,17 @@ void framebufferSizeCallback(GLFWwindow *window, int width, int height) {
 }
 
 void keyCallback(GLFWwindow *window, int key, int, int action, int) {
+  auto *app = static_cast<AppState *>(glfwGetWindowUserPointer(window));
+  if (app == nullptr) {
+    return;
+  }
+
   if (action != GLFW_PRESS) {
+    return;
+  }
+
+  if (app->closeOnAnyKey) {
+    glfwSetWindowShouldClose(window, GLFW_TRUE);
     return;
   }
 
@@ -1228,10 +1270,171 @@ void keyCallback(GLFWwindow *window, int key, int, int action, int) {
 }
 
 void mouseButtonCallback(GLFWwindow *window, int button, int action, int) {
+  auto *app = static_cast<AppState *>(glfwGetWindowUserPointer(window));
+  if (app == nullptr || !app->closeOnMouseButton) {
+    return;
+  }
+
   if (action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT) {
     glfwSetWindowShouldClose(window, GLFW_TRUE);
   }
 }
+
+void cursorPositionCallback(GLFWwindow *window, double x, double y) {
+  auto *app = static_cast<AppState *>(glfwGetWindowUserPointer(window));
+  if (app == nullptr || !app->closeOnMouseMove) {
+    return;
+  }
+
+  if (!app->mouseBaselineCaptured) {
+    app->mouseBaselineCaptured = true;
+    app->mouseBaselineX = x;
+    app->mouseBaselineY = y;
+    return;
+  }
+
+  if (std::abs(x - app->mouseBaselineX) >= app->mouseMoveThreshold ||
+      std::abs(y - app->mouseBaselineY) >= app->mouseMoveThreshold) {
+    glfwSetWindowShouldClose(window, GLFW_TRUE);
+  }
+}
+
+#ifdef _WIN32
+bool tryParseNativeWindowHandle(std::string_view text, std::uintptr_t &value) {
+  try {
+    std::size_t parsed = 0;
+    const auto candidate = std::stoull(std::string(text), &parsed, 0);
+    if (parsed != text.size()) {
+      return false;
+    }
+
+    value = static_cast<std::uintptr_t>(candidate);
+    return true;
+  } catch (const std::exception &) {
+    return false;
+  }
+}
+
+std::string utf8FromWide(std::wstring_view text) {
+  if (text.empty()) {
+    return {};
+  }
+
+  const int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+  if (size <= 0) {
+    return {};
+  }
+
+  std::string result(static_cast<std::size_t>(size), '\0');
+  WideCharToMultiByte(CP_UTF8,
+                      0,
+                      text.data(),
+                      static_cast<int>(text.size()),
+                      result.data(),
+                      size,
+                      nullptr,
+                      nullptr);
+  return result;
+}
+
+std::vector<std::string> getWindowsCommandLineArgs() {
+  int argc = 0;
+  LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (argv == nullptr) {
+    return {"digital-rain-screensaver.scr"};
+  }
+
+  std::vector<std::string> args;
+  args.reserve(static_cast<std::size_t>(argc));
+
+  for (int index = 0; index < argc; ++index) {
+    args.push_back(utf8FromWide(argv[index]));
+  }
+
+  LocalFree(argv);
+  return args;
+}
+
+bool isValidParentWindow(std::uintptr_t nativeParentWindow) {
+  return nativeParentWindow != 0 && IsWindow(reinterpret_cast<HWND>(nativeParentWindow)) != FALSE;
+}
+
+bool getParentClientSize(std::uintptr_t nativeParentWindow, int &width, int &height) {
+  if (!isValidParentWindow(nativeParentWindow)) {
+    return false;
+  }
+
+  RECT clientRect {};
+  if (GetClientRect(reinterpret_cast<HWND>(nativeParentWindow), &clientRect) == FALSE) {
+    return false;
+  }
+
+  width = std::max(1L, clientRect.right - clientRect.left);
+  height = std::max(1L, clientRect.bottom - clientRect.top);
+  return true;
+}
+
+bool attachPreviewWindow(GLFWwindow *window, std::uintptr_t nativeParentWindow) {
+  if (!isValidParentWindow(nativeParentWindow)) {
+    return false;
+  }
+
+  const HWND parentWindow = reinterpret_cast<HWND>(nativeParentWindow);
+  const HWND childWindow = glfwGetWin32Window(window);
+  if (childWindow == nullptr) {
+    return false;
+  }
+
+  SetParent(childWindow, parentWindow);
+
+  LONG_PTR style = GetWindowLongPtrW(childWindow, GWL_STYLE);
+  style &= ~static_cast<LONG_PTR>(WS_POPUP);
+  style &= ~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW);
+  style |= static_cast<LONG_PTR>(WS_CHILD | WS_VISIBLE);
+  SetWindowLongPtrW(childWindow, GWL_STYLE, style);
+
+  LONG_PTR exStyle = GetWindowLongPtrW(childWindow, GWL_EXSTYLE);
+  exStyle &= ~static_cast<LONG_PTR>(WS_EX_APPWINDOW);
+  SetWindowLongPtrW(childWindow, GWL_EXSTYLE, exStyle);
+
+  int width = 1;
+  int height = 1;
+  if (!getParentClientSize(nativeParentWindow, width, height)) {
+    return false;
+  }
+
+  SetWindowPos(childWindow,
+               HWND_TOP,
+               0,
+               0,
+               width,
+               height,
+               SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+  return true;
+}
+
+void syncPreviewWindow(GLFWwindow *window, std::uintptr_t nativeParentWindow) {
+  if (!isValidParentWindow(nativeParentWindow)) {
+    glfwSetWindowShouldClose(window, GLFW_TRUE);
+    return;
+  }
+
+  int width = 1;
+  int height = 1;
+  if (!getParentClientSize(nativeParentWindow, width, height)) {
+    glfwSetWindowShouldClose(window, GLFW_TRUE);
+    return;
+  }
+
+  SetWindowPos(glfwGetWin32Window(window), HWND_TOP, 0, 0, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+int showWindowsMessage(std::string_view title, const std::string &message, std::uintptr_t nativeParentWindow) {
+  const HWND owner = isValidParentWindow(nativeParentWindow) ? reinterpret_cast<HWND>(nativeParentWindow) : nullptr;
+  MessageBoxA(owner, message.c_str(), std::string(title).c_str(), MB_OK | MB_ICONINFORMATION);
+  return EXIT_SUCCESS;
+}
+#endif
 
 void printUsage(std::string_view executableName) {
   std::cout
@@ -1251,8 +1454,10 @@ void printUsage(std::string_view executableName) {
       << "Controls:\n"
       << "  Esc / Q        Exit\n"
       << "  Left click     Exit\n\n"
-      << "Windows screensaver note:\n"
-      << "  /s can be treated as fullscreen in a future .scr wrapper.\n";
+      << "Windows screensaver switches:\n"
+      << "  /s             Run as a fullscreen screensaver\n"
+      << "  /c             Open the configuration placeholder dialog\n"
+      << "  /p HWND        Run inside a preview parent window\n";
 }
 
 bool parseInteger(std::string_view text, int &value) {
@@ -1283,11 +1488,26 @@ bool parseUnsigned(std::string_view text, std::uint32_t &value) {
   }
 }
 
-Config parseArgs(int argc, char **argv) {
+std::vector<std::string> collectArgs(int argc, char **argv) {
+  std::vector<std::string> args;
+  args.reserve(static_cast<std::size_t>(std::max(argc, 0)));
+
+  for (int index = 0; index < argc; ++index) {
+    args.emplace_back(argv[index]);
+  }
+
+  if (args.empty()) {
+    args.emplace_back("digital-rain-screensaver");
+  }
+
+  return args;
+}
+
+Config parseArgs(const std::vector<std::string> &args) {
   Config config;
 
-  for (int index = 1; index < argc; ++index) {
-    const std::string_view argument = argv[index];
+  for (std::size_t index = 1; index < args.size(); ++index) {
+    const std::string_view argument = args[index];
 
     if (argument == "--fullscreen" || argument == "/s") {
       config.fullscreen = true;
@@ -1305,11 +1525,11 @@ Config parseArgs(int argc, char **argv) {
     }
 
     if (argument == "--glyph-set") {
-      if (index + 1 >= argc) {
+      if (index + 1 >= args.size()) {
         throw std::runtime_error("--glyph-set expects one of: procedural, pseudo-katakana, techno, custom");
       }
 
-      const auto glyphSet = parseGlyphSetName(argv[index + 1]);
+      const auto glyphSet = parseGlyphSetName(args[index + 1]);
       if (!glyphSet.has_value()) {
         throw std::runtime_error("Unknown glyph set. Use: procedural, pseudo-katakana, techno, custom");
       }
@@ -1320,11 +1540,11 @@ Config parseArgs(int argc, char **argv) {
     }
 
     if (argument == "--charset") {
-      if (index + 1 >= argc || !hasVisibleCharsetSymbols(argv[index + 1])) {
+      if (index + 1 >= args.size() || !hasVisibleCharsetSymbols(args[index + 1])) {
         throw std::runtime_error("--charset expects a non-empty string with visible characters");
       }
 
-      config.customCharset = argv[index + 1];
+      config.customCharset = args[index + 1];
       config.glyphSet = GlyphSet::CustomCharset;
       ++index;
       continue;
@@ -1336,7 +1556,7 @@ Config parseArgs(int argc, char **argv) {
     }
 
     if (argument == "--width") {
-      if (index + 1 >= argc || !parseInteger(argv[index + 1], config.width)) {
+      if (index + 1 >= args.size() || !parseInteger(args[index + 1], config.width)) {
         throw std::runtime_error("--width expects a positive integer");
       }
       ++index;
@@ -1344,7 +1564,7 @@ Config parseArgs(int argc, char **argv) {
     }
 
     if (argument == "--height") {
-      if (index + 1 >= argc || !parseInteger(argv[index + 1], config.height)) {
+      if (index + 1 >= args.size() || !parseInteger(args[index + 1], config.height)) {
         throw std::runtime_error("--height expects a positive integer");
       }
       ++index;
@@ -1353,7 +1573,7 @@ Config parseArgs(int argc, char **argv) {
 
     if (argument == "--seed") {
       std::uint32_t seed = 0;
-      if (index + 1 >= argc || !parseUnsigned(argv[index + 1], seed)) {
+      if (index + 1 >= args.size() || !parseUnsigned(args[index + 1], seed)) {
         throw std::runtime_error("--seed expects an unsigned integer");
       }
       config.seed = seed;
@@ -1375,23 +1595,90 @@ Config parseArgs(int argc, char **argv) {
   return config;
 }
 
-}  // namespace
+LaunchOptions parseLaunchOptions(const std::vector<std::string> &args) {
+  LaunchOptions options;
+  std::vector<std::string> filteredArgs;
+  filteredArgs.reserve(args.size());
+  filteredArgs.push_back(args.empty() ? "digital-rain-screensaver" : args.front());
 
-int main(int argc, char **argv) {
-  Config config;
-  try {
-    config = parseArgs(argc, argv);
-  } catch (const std::exception &error) {
-    std::cerr << error.what() << "\n\n";
-    printUsage(argc > 0 ? argv[0] : "digital-rain-screensaver");
-    return EXIT_FAILURE;
+#ifdef _WIN32
+  for (std::size_t index = 1; index < args.size(); ++index) {
+    const std::string_view argument = args[index];
+    if (argument.size() >= 2 && argument.front() == '/' && argument[1] != '/') {
+      const char switchName = static_cast<char>(std::tolower(static_cast<unsigned char>(argument[1])));
+      std::string_view inlineValue = argument.substr(2);
+      while (!inlineValue.empty() &&
+             (inlineValue.front() == ':' || inlineValue.front() == '=' ||
+              std::isspace(static_cast<unsigned char>(inlineValue.front())) != 0)) {
+        inlineValue.remove_prefix(1);
+      }
+
+      auto parseParentHandle = [&](bool required, std::string_view missingMessage, std::string_view invalidMessage) {
+        std::uintptr_t handle = 0;
+        if (!inlineValue.empty()) {
+          if (!tryParseNativeWindowHandle(inlineValue, handle)) {
+            throw std::runtime_error(std::string(invalidMessage));
+          }
+          options.nativeParentWindow = handle;
+          return;
+        }
+
+        if (index + 1 < args.size()) {
+          const std::string_view nextArgument = args[index + 1];
+          if (tryParseNativeWindowHandle(nextArgument, handle)) {
+            options.nativeParentWindow = handle;
+            ++index;
+            return;
+          }
+        }
+
+        if (required) {
+          throw std::runtime_error(std::string(missingMessage));
+        }
+      };
+
+      switch (switchName) {
+        case 's':
+          if (inlineValue.empty()) {
+            options.mode = LaunchMode::ScreensaverFullscreen;
+            continue;
+          }
+          break;
+        case 'c':
+          options.mode = LaunchMode::ConfigurationDialog;
+          parseParentHandle(false, "", "/c received an invalid parent window handle");
+          continue;
+        case 'p':
+          options.mode = LaunchMode::ScreensaverPreview;
+          parseParentHandle(true, "/p expects a parent preview window handle", "/p received an invalid parent window handle");
+          continue;
+        case 'a':
+          options.mode = LaunchMode::PasswordChange;
+          parseParentHandle(false, "", "/a received an invalid parent window handle");
+          continue;
+        default:
+          break;
+      }
+    }
+
+    filteredArgs.push_back(args[index]);
+  }
+#else
+  filteredArgs = args;
+#endif
+
+  options.config = parseArgs(filteredArgs);
+
+  if (options.mode == LaunchMode::ScreensaverFullscreen) {
+    options.config.fullscreen = true;
+  } else if (options.mode == LaunchMode::ScreensaverPreview) {
+    options.config.fullscreen = false;
   }
 
-  if (config.showHelp) {
-    printUsage(argc > 0 ? argv[0] : "digital-rain-screensaver");
-    return EXIT_SUCCESS;
-  }
+  return options;
+}
 
+int runRenderer(const LaunchOptions &launchOptions) {
   glfwSetErrorCallback([](int code, const char *description) {
     std::cerr << "GLFW error " << code << ": " << description << '\n';
   });
@@ -1401,15 +1688,35 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
+  const bool previewMode = launchOptions.mode == LaunchMode::ScreensaverPreview;
+
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-  glfwWindowHint(GLFW_RESIZABLE, config.fullscreen ? GLFW_FALSE : GLFW_TRUE);
+  glfwWindowHint(GLFW_RESIZABLE, (!launchOptions.config.fullscreen && !previewMode) ? GLFW_TRUE : GLFW_FALSE);
+  glfwWindowHint(GLFW_DECORATED, previewMode ? GLFW_FALSE : GLFW_TRUE);
+  glfwWindowHint(GLFW_VISIBLE, previewMode ? GLFW_FALSE : GLFW_TRUE);
 
-  GLFWmonitor *monitor = config.fullscreen ? glfwGetPrimaryMonitor() : nullptr;
-  const GLFWvidmode *mode = monitor != nullptr ? glfwGetVideoMode(monitor) : nullptr;
+  int windowWidth = launchOptions.config.width;
+  int windowHeight = launchOptions.config.height;
+  GLFWmonitor *monitor = nullptr;
 
-  const int windowWidth = (mode != nullptr) ? mode->width : config.width;
-  const int windowHeight = (mode != nullptr) ? mode->height : config.height;
+#ifdef _WIN32
+  if (previewMode) {
+    if (!getParentClientSize(launchOptions.nativeParentWindow, windowWidth, windowHeight)) {
+      std::cerr << "Preview mode requires a valid parent window handle.\n";
+      glfwTerminate();
+      return EXIT_FAILURE;
+    }
+  } else
+#endif
+  if (launchOptions.config.fullscreen) {
+    monitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode *mode = monitor != nullptr ? glfwGetVideoMode(monitor) : nullptr;
+    if (mode != nullptr) {
+      windowWidth = mode->width;
+      windowHeight = mode->height;
+    }
+  }
 
   GLFWwindow *window = glfwCreateWindow(windowWidth,
                                         windowHeight,
@@ -1422,18 +1729,37 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
+#ifdef _WIN32
+  if (previewMode && !attachPreviewWindow(window, launchOptions.nativeParentWindow)) {
+    std::cerr << "Failed to attach preview window to the requested parent HWND.\n";
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    return EXIT_FAILURE;
+  }
+#endif
+
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
-  glfwSetInputMode(window, GLFW_CURSOR, config.fullscreen ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
+  glfwSetInputMode(window,
+                   GLFW_CURSOR,
+                   launchOptions.config.fullscreen && !previewMode ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
 
   std::random_device randomDevice;
-  const std::uint32_t seed = config.seed.value_or(randomDevice());
+  const std::uint32_t seed = launchOptions.config.seed.value_or(randomDevice());
 
   AppState app {};
-  app.config = config;
-  app.glyphAtlas = buildGlyphAtlas(config);
+  app.config = launchOptions.config;
+  app.glyphAtlas = buildGlyphAtlas(launchOptions.config);
   app.rainLayers = createRainLayers();
   app.rng = std::mt19937(seed);
+  app.closeOnAnyKey = launchOptions.mode == LaunchMode::ScreensaverFullscreen;
+  app.closeOnMouseButton = launchOptions.mode != LaunchMode::ScreensaverPreview;
+  app.closeOnMouseMove = launchOptions.mode == LaunchMode::ScreensaverFullscreen;
+  app.previewMode = previewMode;
+
+#ifdef _WIN32
+  app.previewParentWindow = launchOptions.nativeParentWindow;
+#endif
 
   int framebufferWidth = 0;
   int framebufferHeight = 0;
@@ -1446,10 +1772,17 @@ int main(int argc, char **argv) {
   glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
   glfwSetKeyCallback(window, keyCallback);
   glfwSetMouseButtonCallback(window, mouseButtonCallback);
+  glfwSetCursorPosCallback(window, cursorPositionCallback);
 
   double previousTime = glfwGetTime();
 
   while (glfwWindowShouldClose(window) == GLFW_FALSE) {
+#ifdef _WIN32
+    if (previewMode) {
+      syncPreviewWindow(window, launchOptions.nativeParentWindow);
+    }
+#endif
+
     glfwPollEvents();
 
     const double currentTime = glfwGetTime();
@@ -1466,3 +1799,55 @@ int main(int argc, char **argv) {
   glfwTerminate();
   return EXIT_SUCCESS;
 }
+
+int runApp(const std::vector<std::string> &args) {
+  const std::string executableName = args.empty() ? "digital-rain-screensaver" : args.front();
+
+  LaunchOptions launchOptions;
+  try {
+    launchOptions = parseLaunchOptions(args);
+  } catch (const std::exception &error) {
+    std::cerr << error.what() << "\n\n";
+    printUsage(executableName);
+    return EXIT_FAILURE;
+  }
+
+  if (launchOptions.config.showHelp) {
+    printUsage(executableName);
+    return EXIT_SUCCESS;
+  }
+
+#ifdef _WIN32
+  if (launchOptions.mode == LaunchMode::ConfigurationDialog) {
+    std::string message =
+        "A native configuration window has not been implemented yet.\n\n"
+        "Supported Windows screensaver switches:\n"
+        "  /s  Fullscreen screensaver\n"
+        "  /p  Preview mode inside a parent window\n"
+        "  /c  This placeholder dialog\n\n"
+        "For now, visual options are still configured through command-line flags.";
+    return showWindowsMessage("Digital Rain Screensaver", message, launchOptions.nativeParentWindow);
+  }
+
+  if (launchOptions.mode == LaunchMode::PasswordChange) {
+    std::string message =
+        "Windows password-change screensaver hooks are not supported by this project.\n\n"
+        "On modern Windows versions this path is typically unused.";
+    return showWindowsMessage("Digital Rain Screensaver", message, launchOptions.nativeParentWindow);
+  }
+#endif
+
+  return runRenderer(launchOptions);
+}
+
+}  // namespace
+
+#ifdef _WIN32
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+  return runApp(getWindowsCommandLineArgs());
+}
+#else
+int main(int argc, char **argv) {
+  return runApp(collectArgs(argc, argv));
+}
+#endif

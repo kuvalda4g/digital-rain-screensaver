@@ -33,11 +33,26 @@ set_target_properties(digital_rain_screensaver PROPERTIES
   OUTPUT_NAME "digital-rain-screensaver"
 )
 
+if(WIN32)
+  set_target_properties(digital_rain_screensaver PROPERTIES
+    SUFFIX ".scr"
+    WIN32_EXECUTABLE ON
+  )
+endif()
+
 target_link_libraries(digital_rain_screensaver
   PRIVATE
     ${PROJECT_GLFW_TARGET}
     OpenGL::GL
 )
+
+if(WIN32)
+  target_link_libraries(digital_rain_screensaver
+    PRIVATE
+      shell32
+      user32
+  )
+endif()
 
 target_compile_features(digital_rain_screensaver PRIVATE cxx_std_20)
 
