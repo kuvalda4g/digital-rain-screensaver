@@ -8,7 +8,7 @@ The project renders a fullscreen or windowed "digital rain" scene inspired by cl
 
 This repository currently contains the rendering core:
 - runs as a regular desktop application on Windows and Linux;
-- builds as a native `.scr` screensaver on Windows with `/s`, `/c`, and `/p` support;
+- builds as a native `.scr` screensaver on Windows with `/s`, `/c`, and `/p` support plus a native configuration UI;
 - supports fullscreen and windowed modes;
 - is intended to become the base for future platform-specific screensaver wrappers.
 
@@ -72,7 +72,7 @@ Windows screensaver mode:
 digital-rain-screensaver.scr /s
 ```
 
-Windows configuration placeholder:
+Windows configuration UI:
 
 ```bash
 digital-rain-screensaver.scr /c
@@ -117,11 +117,11 @@ Custom window size:
 
 This project is the rendering core only. A real OS-level screensaver still needs platform-specific integration:
 
-- Windows: native `.scr` wrapper is in place, with a placeholder config dialog and GLFW-based preview embedding for `/p`;
+- Windows: native `.scr` wrapper, persistent configuration UI, and GLFW-based preview embedding for `/p` are in place;
 - Linux: integration depends on the target desktop environment, for example `xscreensaver` or a standalone fullscreen launcher.
 
 ## Roadmap
 
-- add a real Windows configuration UI and persistent settings;
+- expand the Windows configuration UI with palettes, presets, and more visual controls;
 - add Linux-oriented launcher/integration options;
 - improve the visual style with more variation and configuration.

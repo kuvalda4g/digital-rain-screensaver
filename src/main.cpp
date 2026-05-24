@@ -583,6 +583,23 @@ std::optional<GlyphSet> parseGlyphSetName(std::string_view text) {
   return std::nullopt;
 }
 
+#ifdef _WIN32
+std::string_view glyphSetToConfigName(GlyphSet glyphSet) {
+  switch (glyphSet) {
+    case GlyphSet::Procedural:
+      return "procedural";
+    case GlyphSet::PseudoKatakana:
+      return "pseudo-katakana";
+    case GlyphSet::Techno:
+      return "techno";
+    case GlyphSet::CustomCharset:
+      return "custom";
+  }
+
+  return "procedural";
+}
+#endif
+
 bool hasVisibleCharsetSymbols(std::string_view text) {
   for (unsigned char symbol : text) {
     if (std::isspace(symbol) == 0) {
@@ -607,6 +624,8 @@ std::vector<Glyph> buildGlyphAtlas(const Config &config) {
 
   return buildProceduralGlyphSet();
 }
+
+bool parseUnsigned(std::string_view text, std::uint32_t &value);
 
 float clampDelta(double value) {
   return std::clamp(static_cast<float>(value), 0.0f, 0.05f);
@@ -1434,6 +1453,658 @@ int showWindowsMessage(std::string_view title, const std::string &message, std::
   MessageBoxA(owner, message.c_str(), std::string(title).c_str(), MB_OK | MB_ICONINFORMATION);
   return EXIT_SUCCESS;
 }
+
+std::wstring wideFromUtf8(std::string_view text) {
+  if (text.empty()) {
+    return {};
+  }
+
+  const int size =
+      MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  if (size <= 0) {
+    return {};
+  }
+
+  std::wstring result(static_cast<std::size_t>(size), L'\0');
+  MultiByteToWideChar(CP_UTF8,
+                      0,
+                      text.data(),
+                      static_cast<int>(text.size()),
+                      result.data(),
+                      size);
+  return result;
+}
+
+std::wstring getEnvironmentVariableWide(const wchar_t *name) {
+  const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+  if (required == 0) {
+    return {};
+  }
+
+  std::wstring buffer(static_cast<std::size_t>(required), L'\0');
+  const DWORD written = GetEnvironmentVariableW(name, buffer.data(), required);
+  if (written == 0 || written >= required) {
+    return {};
+  }
+
+  buffer.resize(static_cast<std::size_t>(written));
+  return buffer;
+}
+
+std::wstring readProfileString(std::wstring_view path,
+                               const wchar_t *section,
+                               const wchar_t *key,
+                               std::wstring_view defaultValue) {
+  std::wstring buffer(2048, L'\0');
+  const DWORD written = GetPrivateProfileStringW(section,
+                                                 key,
+                                                 defaultValue.empty() ? L"" : defaultValue.data(),
+                                                 buffer.data(),
+                                                 static_cast<DWORD>(buffer.size()),
+                                                 std::wstring(path).c_str());
+  buffer.resize(static_cast<std::size_t>(written));
+  return buffer;
+}
+
+bool ensureWindowsSettingsDirectory(std::wstring &directoryPath, std::string &errorMessage) {
+  std::wstring basePath = getEnvironmentVariableWide(L"APPDATA");
+  if (basePath.empty()) {
+    errorMessage = "APPDATA is not available, so the Windows settings directory could not be resolved.";
+    return false;
+  }
+
+  directoryPath = basePath + L"\\DigitalRainScreensaver";
+  if (CreateDirectoryW(directoryPath.c_str(), nullptr) == FALSE) {
+    const DWORD error = GetLastError();
+    if (error != ERROR_ALREADY_EXISTS) {
+      errorMessage = "Failed to create the Windows settings directory.";
+      return false;
+    }
+  }
+
+  return true;
+}
+
+std::optional<std::wstring> getWindowsSettingsFilePath(std::string &errorMessage) {
+  std::wstring directoryPath;
+  if (!ensureWindowsSettingsDirectory(directoryPath, errorMessage)) {
+    return std::nullopt;
+  }
+
+  return directoryPath + L"\\settings.ini";
+}
+
+Config makeSanitizedPersistentConfig(Config config) {
+  config.showHelp = false;
+  config.fullscreen = false;
+  config.width = 1280;
+  config.height = 720;
+
+  if (config.glyphSet == GlyphSet::CustomCharset && !hasVisibleCharsetSymbols(config.customCharset)) {
+    config.glyphSet = GlyphSet::Procedural;
+    config.customCharset.clear();
+  }
+
+  return config;
+}
+
+Config loadPersistedConfig() {
+  Config config;
+  std::string errorMessage;
+  const auto settingsPath = getWindowsSettingsFilePath(errorMessage);
+  if (!settingsPath.has_value()) {
+    return config;
+  }
+
+  config.sway = GetPrivateProfileIntW(L"visual", L"sway", config.sway ? 1 : 0, settingsPath->c_str()) != 0;
+
+  const std::string glyphSetText = utf8FromWide(readProfileString(*settingsPath, L"visual", L"glyph_set", L"procedural"));
+  if (const auto glyphSet = parseGlyphSetName(glyphSetText); glyphSet.has_value()) {
+    config.glyphSet = *glyphSet;
+  }
+
+  config.customCharset = utf8FromWide(readProfileString(*settingsPath, L"visual", L"charset", L""));
+
+  if (GetPrivateProfileIntW(L"visual", L"seed_enabled", 0, settingsPath->c_str()) != 0) {
+    const std::string seedText = utf8FromWide(readProfileString(*settingsPath, L"visual", L"seed", L""));
+    std::uint32_t seed = 0;
+    if (parseUnsigned(seedText, seed)) {
+      config.seed = seed;
+    }
+  }
+
+  return makeSanitizedPersistentConfig(config);
+}
+
+bool savePersistedConfig(const Config &config, std::string &errorMessage) {
+  const auto sanitized = makeSanitizedPersistentConfig(config);
+  const auto settingsPath = getWindowsSettingsFilePath(errorMessage);
+  if (!settingsPath.has_value()) {
+    return false;
+  }
+
+  const std::wstring glyphSet = wideFromUtf8(glyphSetToConfigName(sanitized.glyphSet));
+  const std::wstring charset = wideFromUtf8(sanitized.customCharset);
+  const std::wstring seedText = sanitized.seed.has_value() ? wideFromUtf8(std::to_string(*sanitized.seed)) : L"";
+
+  const bool ok =
+      WritePrivateProfileStringW(L"visual", L"glyph_set", glyphSet.c_str(), settingsPath->c_str()) != FALSE &&
+      WritePrivateProfileStringW(L"visual", L"charset", charset.c_str(), settingsPath->c_str()) != FALSE &&
+      WritePrivateProfileStringW(L"visual", L"sway", sanitized.sway ? L"1" : L"0", settingsPath->c_str()) != FALSE &&
+      WritePrivateProfileStringW(L"visual", L"seed_enabled", sanitized.seed.has_value() ? L"1" : L"0", settingsPath->c_str()) != FALSE &&
+      WritePrivateProfileStringW(L"visual", L"seed", seedText.c_str(), settingsPath->c_str()) != FALSE;
+
+  if (!ok) {
+    errorMessage = "Failed to save the Windows screensaver settings.";
+  }
+
+  return ok;
+}
+
+constexpr wchar_t kConfigWindowClassName[] = L"DigitalRainScreensaverConfigWindow";
+
+enum : int {
+  kControlGlyphSetCombo = 1001,
+  kControlCharsetEdit = 1002,
+  kControlSwayCheckbox = 1003,
+  kControlUseSeedCheckbox = 1004,
+  kControlSeedEdit = 1005,
+  kControlOkButton = 1006,
+  kControlCancelButton = 1007,
+  kControlDefaultsButton = 1008,
+};
+
+struct WindowsConfigDialogState {
+  Config currentConfig;
+  Config defaults;
+  std::uintptr_t ownerWindow = 0;
+  HWND window = nullptr;
+  HWND glyphSetCombo = nullptr;
+  HWND customCharsetLabel = nullptr;
+  HWND customCharsetEdit = nullptr;
+  HWND swayCheckbox = nullptr;
+  HWND useSeedCheckbox = nullptr;
+  HWND seedLabel = nullptr;
+  HWND seedEdit = nullptr;
+};
+
+std::wstring_view glyphSetDisplayNameWide(GlyphSet glyphSet) {
+  switch (glyphSet) {
+    case GlyphSet::Procedural:
+      return L"Procedural";
+    case GlyphSet::PseudoKatakana:
+      return L"Pseudo-katakana";
+    case GlyphSet::Techno:
+      return L"Techno";
+    case GlyphSet::CustomCharset:
+      return L"Custom charset";
+  }
+
+  return L"Procedural";
+}
+
+int glyphSetComboIndex(GlyphSet glyphSet) {
+  switch (glyphSet) {
+    case GlyphSet::Procedural:
+      return 0;
+    case GlyphSet::PseudoKatakana:
+      return 1;
+    case GlyphSet::Techno:
+      return 2;
+    case GlyphSet::CustomCharset:
+      return 3;
+  }
+
+  return 0;
+}
+
+GlyphSet glyphSetFromComboIndex(int index) {
+  switch (index) {
+    case 1:
+      return GlyphSet::PseudoKatakana;
+    case 2:
+      return GlyphSet::Techno;
+    case 3:
+      return GlyphSet::CustomCharset;
+    case 0:
+    default:
+      return GlyphSet::Procedural;
+  }
+}
+
+void setCheckboxState(HWND window, bool value) {
+  SendMessageW(window, BM_SETCHECK, value ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+bool checkboxState(HWND window) {
+  return SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+void applyDefaultGuiFont(HWND window) {
+  SendMessageW(window,
+               WM_SETFONT,
+               reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)),
+               TRUE);
+}
+
+void setControlTextUtf8(HWND window, std::string_view text) {
+  const std::wstring wideText = wideFromUtf8(text);
+  SetWindowTextW(window, wideText.c_str());
+}
+
+std::string getControlTextUtf8(HWND window) {
+  const int length = GetWindowTextLengthW(window);
+  if (length <= 0) {
+    return {};
+  }
+
+  std::wstring buffer(static_cast<std::size_t>(length) + 1, L'\0');
+  GetWindowTextW(window, buffer.data(), length + 1);
+  buffer.resize(static_cast<std::size_t>(length));
+  return utf8FromWide(buffer);
+}
+
+void syncConfigDialogEnabledState(WindowsConfigDialogState &state) {
+  const auto selectedGlyphSet =
+      glyphSetFromComboIndex(static_cast<int>(SendMessageW(state.glyphSetCombo, CB_GETCURSEL, 0, 0)));
+  const bool customCharset = selectedGlyphSet == GlyphSet::CustomCharset;
+  EnableWindow(state.customCharsetLabel, customCharset ? TRUE : FALSE);
+  EnableWindow(state.customCharsetEdit, customCharset ? TRUE : FALSE);
+
+  const bool useSeed = checkboxState(state.useSeedCheckbox);
+  EnableWindow(state.seedLabel, useSeed ? TRUE : FALSE);
+  EnableWindow(state.seedEdit, useSeed ? TRUE : FALSE);
+}
+
+void applyConfigToDialog(WindowsConfigDialogState &state, const Config &config) {
+  SendMessageW(state.glyphSetCombo, CB_SETCURSEL, glyphSetComboIndex(config.glyphSet), 0);
+  setControlTextUtf8(state.customCharsetEdit, config.customCharset);
+  setCheckboxState(state.swayCheckbox, config.sway);
+  setCheckboxState(state.useSeedCheckbox, config.seed.has_value());
+  setControlTextUtf8(state.seedEdit, config.seed.has_value() ? std::to_string(*config.seed) : "");
+  syncConfigDialogEnabledState(state);
+}
+
+bool readConfigFromDialog(WindowsConfigDialogState &state, Config &config, std::string &errorMessage) {
+  config = state.currentConfig;
+  config.sway = checkboxState(state.swayCheckbox);
+  config.glyphSet =
+      glyphSetFromComboIndex(static_cast<int>(SendMessageW(state.glyphSetCombo, CB_GETCURSEL, 0, 0)));
+  config.customCharset = getControlTextUtf8(state.customCharsetEdit);
+
+  if (config.glyphSet == GlyphSet::CustomCharset && !hasVisibleCharsetSymbols(config.customCharset)) {
+    errorMessage = "Custom glyph mode requires at least one visible character in the charset field.";
+    return false;
+  }
+
+  if (checkboxState(state.useSeedCheckbox)) {
+    const std::string seedText = getControlTextUtf8(state.seedEdit);
+    std::uint32_t seed = 0;
+    if (seedText.empty() || !parseUnsigned(seedText, seed)) {
+      errorMessage = "The fixed seed must be a valid unsigned integer.";
+      return false;
+    }
+
+    config.seed = seed;
+  } else {
+    config.seed.reset();
+  }
+
+  config.showHelp = false;
+  return true;
+}
+
+void centerWindowRelativeToOwner(HWND window, std::uintptr_t nativeOwnerWindow) {
+  RECT dialogRect {};
+  GetWindowRect(window, &dialogRect);
+
+  RECT anchorRect {};
+  if (isValidParentWindow(nativeOwnerWindow)) {
+    GetWindowRect(reinterpret_cast<HWND>(nativeOwnerWindow), &anchorRect);
+  } else {
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &anchorRect, 0);
+  }
+
+  const int dialogWidth = dialogRect.right - dialogRect.left;
+  const int dialogHeight = dialogRect.bottom - dialogRect.top;
+  const int anchorWidth = anchorRect.right - anchorRect.left;
+  const int anchorHeight = anchorRect.bottom - anchorRect.top;
+
+  const int x = anchorRect.left + std::max(0, (anchorWidth - dialogWidth) / 2);
+  const int y = anchorRect.top + std::max(0, (anchorHeight - dialogHeight) / 2);
+
+  SetWindowPos(window, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+LRESULT CALLBACK windowsConfigDialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+  auto *state = reinterpret_cast<WindowsConfigDialogState *>(GetWindowLongPtrW(window, GWLP_USERDATA));
+
+  switch (message) {
+    case WM_NCCREATE: {
+      auto *createStruct = reinterpret_cast<CREATESTRUCTW *>(lParam);
+      auto *dialogState = reinterpret_cast<WindowsConfigDialogState *>(createStruct->lpCreateParams);
+      SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(dialogState));
+      dialogState->window = window;
+      return TRUE;
+    }
+
+    case WM_CREATE: {
+      if (state == nullptr) {
+        return -1;
+      }
+
+      constexpr int margin = 16;
+      constexpr int labelWidth = 128;
+      constexpr int controlLeft = 156;
+      constexpr int controlWidth = 230;
+      constexpr int rowHeight = 28;
+
+      HWND glyphSetLabel = CreateWindowExW(0,
+                                           L"STATIC",
+                                           L"Glyph set:",
+                                           WS_CHILD | WS_VISIBLE,
+                                           margin,
+                                           18,
+                                           labelWidth,
+                                           20,
+                                           window,
+                                           nullptr,
+                                           nullptr,
+                                           nullptr);
+      applyDefaultGuiFont(glyphSetLabel);
+
+      state->glyphSetCombo = CreateWindowExW(0,
+                                             L"COMBOBOX",
+                                             nullptr,
+                                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+                                             controlLeft,
+                                             14,
+                                             controlWidth,
+                                             240,
+                                             window,
+                                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kControlGlyphSetCombo)),
+                                             nullptr,
+                                             nullptr);
+      applyDefaultGuiFont(state->glyphSetCombo);
+      SendMessageW(state->glyphSetCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(glyphSetDisplayNameWide(GlyphSet::Procedural).data()));
+      SendMessageW(state->glyphSetCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(glyphSetDisplayNameWide(GlyphSet::PseudoKatakana).data()));
+      SendMessageW(state->glyphSetCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(glyphSetDisplayNameWide(GlyphSet::Techno).data()));
+      SendMessageW(state->glyphSetCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(glyphSetDisplayNameWide(GlyphSet::CustomCharset).data()));
+
+      state->customCharsetLabel = CreateWindowExW(0,
+                                                  L"STATIC",
+                                                  L"Custom charset:",
+                                                  WS_CHILD | WS_VISIBLE,
+                                                  margin,
+                                                  18 + rowHeight + 10,
+                                                  labelWidth,
+                                                  20,
+                                                  window,
+                                                  nullptr,
+                                                  nullptr,
+                                                  nullptr);
+      applyDefaultGuiFont(state->customCharsetLabel);
+
+      state->customCharsetEdit = CreateWindowExW(WS_EX_CLIENTEDGE,
+                                                 L"EDIT",
+                                                 nullptr,
+                                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+                                                 controlLeft,
+                                                 14 + rowHeight + 10,
+                                                 controlWidth,
+                                                 24,
+                                                 window,
+                                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kControlCharsetEdit)),
+                                                 nullptr,
+                                                 nullptr);
+      applyDefaultGuiFont(state->customCharsetEdit);
+
+      state->swayCheckbox = CreateWindowExW(0,
+                                            L"BUTTON",
+                                            L"Enable horizontal sway",
+                                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                                            margin,
+                                            18 + (rowHeight * 2) + 14,
+                                            220,
+                                            22,
+                                            window,
+                                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kControlSwayCheckbox)),
+                                            nullptr,
+                                            nullptr);
+      applyDefaultGuiFont(state->swayCheckbox);
+
+      state->useSeedCheckbox = CreateWindowExW(0,
+                                               L"BUTTON",
+                                               L"Use fixed seed",
+                                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                                               margin,
+                                               18 + (rowHeight * 3) + 18,
+                                               220,
+                                               22,
+                                               window,
+                                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(kControlUseSeedCheckbox)),
+                                               nullptr,
+                                               nullptr);
+      applyDefaultGuiFont(state->useSeedCheckbox);
+
+      state->seedLabel = CreateWindowExW(0,
+                                         L"STATIC",
+                                         L"Seed value:",
+                                         WS_CHILD | WS_VISIBLE,
+                                         margin,
+                                         18 + (rowHeight * 4) + 20,
+                                         labelWidth,
+                                         20,
+                                         window,
+                                         nullptr,
+                                         nullptr,
+                                         nullptr);
+      applyDefaultGuiFont(state->seedLabel);
+
+      state->seedEdit = CreateWindowExW(WS_EX_CLIENTEDGE,
+                                        L"EDIT",
+                                        nullptr,
+                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
+                                        controlLeft,
+                                        14 + (rowHeight * 4) + 20,
+                                        120,
+                                        24,
+                                        window,
+                                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kControlSeedEdit)),
+                                        nullptr,
+                                        nullptr);
+      applyDefaultGuiFont(state->seedEdit);
+
+      HWND noteLabel = CreateWindowExW(0,
+                                       L"STATIC",
+                                       L"Saved settings apply to /s, /p, and regular Windows launches.",
+                                       WS_CHILD | WS_VISIBLE,
+                                       margin,
+                                       18 + (rowHeight * 5) + 22,
+                                       360,
+                                       20,
+                                       window,
+                                       nullptr,
+                                       nullptr,
+                                       nullptr);
+      applyDefaultGuiFont(noteLabel);
+
+      HWND defaultsButton = CreateWindowExW(0,
+                                            L"BUTTON",
+                                            L"Defaults",
+                                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                            88,
+                                            222,
+                                            86,
+                                            28,
+                                            window,
+                                            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kControlDefaultsButton)),
+                                            nullptr,
+                                            nullptr);
+      applyDefaultGuiFont(defaultsButton);
+
+      HWND cancelButton = CreateWindowExW(0,
+                                          L"BUTTON",
+                                          L"Cancel",
+                                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                          182,
+                                          222,
+                                          86,
+                                          28,
+                                          window,
+                                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(kControlCancelButton)),
+                                          nullptr,
+                                          nullptr);
+      applyDefaultGuiFont(cancelButton);
+
+      HWND okButton = CreateWindowExW(0,
+                                      L"BUTTON",
+                                      L"Save",
+                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                                      276,
+                                      222,
+                                      110,
+                                      28,
+                                      window,
+                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kControlOkButton)),
+                                      nullptr,
+                                      nullptr);
+      applyDefaultGuiFont(okButton);
+
+      applyConfigToDialog(*state, state->currentConfig);
+      centerWindowRelativeToOwner(window, state->ownerWindow);
+      return 0;
+    }
+
+    case WM_COMMAND: {
+      if (state == nullptr) {
+        return 0;
+      }
+
+      const int controlId = LOWORD(wParam);
+      const int notificationCode = HIWORD(wParam);
+
+      if (controlId == kControlGlyphSetCombo && notificationCode == CBN_SELCHANGE) {
+        syncConfigDialogEnabledState(*state);
+        return 0;
+      }
+
+      if (controlId == kControlUseSeedCheckbox && notificationCode == BN_CLICKED) {
+        syncConfigDialogEnabledState(*state);
+        return 0;
+      }
+
+      if (controlId == kControlDefaultsButton && notificationCode == BN_CLICKED) {
+        state->currentConfig = state->defaults;
+        applyConfigToDialog(*state, state->currentConfig);
+        return 0;
+      }
+
+      if (controlId == kControlCancelButton && notificationCode == BN_CLICKED) {
+        DestroyWindow(window);
+        return 0;
+      }
+
+      if (controlId == kControlOkButton && notificationCode == BN_CLICKED) {
+        Config updatedConfig;
+        std::string errorMessage;
+        if (!readConfigFromDialog(*state, updatedConfig, errorMessage)) {
+          showWindowsMessage("Digital Rain Screensaver", errorMessage, state->ownerWindow);
+          return 0;
+        }
+
+        if (!savePersistedConfig(updatedConfig, errorMessage)) {
+          showWindowsMessage("Digital Rain Screensaver", errorMessage, state->ownerWindow);
+          return 0;
+        }
+
+        state->currentConfig = updatedConfig;
+        DestroyWindow(window);
+        return 0;
+      }
+
+      return 0;
+    }
+
+    case WM_CLOSE:
+      DestroyWindow(window);
+      return 0;
+
+    case WM_DESTROY:
+      PostQuitMessage(0);
+      return 0;
+
+    default:
+      return DefWindowProcW(window, message, wParam, lParam);
+  }
+}
+
+bool ensureConfigWindowClassRegistered(HINSTANCE instance, std::string &errorMessage) {
+  WNDCLASSEXW windowClass {};
+  windowClass.cbSize = sizeof(windowClass);
+  windowClass.lpfnWndProc = windowsConfigDialogProc;
+  windowClass.hInstance = instance;
+  windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+  windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+  windowClass.lpszClassName = kConfigWindowClassName;
+
+  if (RegisterClassExW(&windowClass) == 0) {
+    const DWORD error = GetLastError();
+    if (error != ERROR_CLASS_ALREADY_EXISTS) {
+      errorMessage = "Failed to register the Windows configuration window class.";
+      return false;
+    }
+  }
+
+  return true;
+}
+
+int runWindowsConfigurationDialog(const Config &initialConfig, std::uintptr_t nativeOwnerWindow) {
+  std::string errorMessage;
+  if (!ensureConfigWindowClassRegistered(GetModuleHandleW(nullptr), errorMessage)) {
+    return showWindowsMessage("Digital Rain Screensaver", errorMessage, nativeOwnerWindow);
+  }
+
+  WindowsConfigDialogState dialogState {
+      .currentConfig = makeSanitizedPersistentConfig(initialConfig),
+      .defaults = Config {},
+      .ownerWindow = nativeOwnerWindow,
+  };
+
+  HWND window = CreateWindowExW(WS_EX_DLGMODALFRAME,
+                                kConfigWindowClassName,
+                                L"Digital Rain Screensaver Settings",
+                                WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+                                CW_USEDEFAULT,
+                                CW_USEDEFAULT,
+                                420,
+                                300,
+                                isValidParentWindow(nativeOwnerWindow) ? reinterpret_cast<HWND>(nativeOwnerWindow) : nullptr,
+                                nullptr,
+                                GetModuleHandleW(nullptr),
+                                &dialogState);
+  if (window == nullptr) {
+    return showWindowsMessage("Digital Rain Screensaver",
+                              "Failed to create the Windows configuration window.",
+                              nativeOwnerWindow);
+  }
+
+  ShowWindow(window, SW_SHOW);
+  UpdateWindow(window);
+
+  MSG message {};
+  while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+    if (dialogState.window != nullptr && IsDialogMessageW(dialogState.window, &message) != FALSE) {
+      continue;
+    }
+
+    TranslateMessage(&message);
+    DispatchMessageW(&message);
+  }
+
+  return EXIT_SUCCESS;
+}
 #endif
 
 void printUsage(std::string_view executableName) {
@@ -1456,8 +2127,9 @@ void printUsage(std::string_view executableName) {
       << "  Left click     Exit\n\n"
       << "Windows screensaver switches:\n"
       << "  /s             Run as a fullscreen screensaver\n"
-      << "  /c             Open the configuration placeholder dialog\n"
-      << "  /p HWND        Run inside a preview parent window\n";
+      << "  /c             Open the native configuration window and save Windows defaults\n"
+      << "  /p HWND        Run inside a preview parent window\n"
+      << "\nOn Windows, settings saved through /c are used as the default visual profile.\n";
 }
 
 bool parseInteger(std::string_view text, int &value) {
@@ -1503,8 +2175,9 @@ std::vector<std::string> collectArgs(int argc, char **argv) {
   return args;
 }
 
-Config parseArgs(const std::vector<std::string> &args) {
-  Config config;
+Config parseArgs(const std::vector<std::string> &args, Config baseConfig = {}) {
+  Config config = baseConfig;
+  config.showHelp = false;
 
   for (std::size_t index = 1; index < args.size(); ++index) {
     const std::string_view argument = args[index];
@@ -1602,6 +2275,7 @@ LaunchOptions parseLaunchOptions(const std::vector<std::string> &args) {
   filteredArgs.push_back(args.empty() ? "digital-rain-screensaver" : args.front());
 
 #ifdef _WIN32
+  Config baseConfig = loadPersistedConfig();
   for (std::size_t index = 1; index < args.size(); ++index) {
     const std::string_view argument = args[index];
     if (argument.size() >= 2 && argument.front() == '/' && argument[1] != '/') {
@@ -1664,10 +2338,11 @@ LaunchOptions parseLaunchOptions(const std::vector<std::string> &args) {
     filteredArgs.push_back(args[index]);
   }
 #else
+  Config baseConfig;
   filteredArgs = args;
 #endif
 
-  options.config = parseArgs(filteredArgs);
+  options.config = parseArgs(filteredArgs, baseConfig);
 
   if (options.mode == LaunchMode::ScreensaverFullscreen) {
     options.config.fullscreen = true;
@@ -1819,14 +2494,7 @@ int runApp(const std::vector<std::string> &args) {
 
 #ifdef _WIN32
   if (launchOptions.mode == LaunchMode::ConfigurationDialog) {
-    std::string message =
-        "A native configuration window has not been implemented yet.\n\n"
-        "Supported Windows screensaver switches:\n"
-        "  /s  Fullscreen screensaver\n"
-        "  /p  Preview mode inside a parent window\n"
-        "  /c  This placeholder dialog\n\n"
-        "For now, visual options are still configured through command-line flags.";
-    return showWindowsMessage("Digital Rain Screensaver", message, launchOptions.nativeParentWindow);
+    return runWindowsConfigurationDialog(launchOptions.config, launchOptions.nativeParentWindow);
   }
 
   if (launchOptions.mode == LaunchMode::PasswordChange) {
